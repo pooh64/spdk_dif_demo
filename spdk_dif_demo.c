@@ -160,6 +160,8 @@ read_complete(void *arg, const struct spdk_nvme_cpl *completion)
 		sequence->is_completed = 2;
 	}
 
+	printf("Read request done, verify DIF\n");
+
 	iov.iov_base = sequence->buf;
 	iov.iov_len  = sequence->ns_entry->block_size - sequence->ns_entry->md_size;
 	rc = spdk_dif_verify(&iov, 1, 1, &sequence->dif_ctx, &dif_error);
@@ -169,9 +171,10 @@ read_complete(void *arg, const struct spdk_nvme_cpl *completion)
 		fprintf(stderr, "Actual  : %08" PRIx32 "\n", dif_error.actual);
 		fprintf(stderr, "Expected: %08" PRIx32 "\n", dif_error.expected);
 		sequence->is_completed = 2;
+	} else {
+		printf("I/O Done, no DIF errors detected\n");
 	}
 
-	printf("I/O Done, no DIF errors detected\n");
 	spdk_free(sequence->buf);
 }
 
@@ -190,6 +193,8 @@ write_complete(void *arg, const struct spdk_nvme_cpl *completion)
 		exit(1);
 	}
 
+	printf("Write reqest done\n");
+
 	if (sequence->using_cmb_io) {
 		spdk_nvme_ctrlr_free_cmb_io_buffer(ns_entry->ctrlr, sequence->buf, 0x1000);
 	} else {
@@ -197,10 +202,12 @@ write_complete(void *arg, const struct spdk_nvme_cpl *completion)
 	}
 	sequence->buf = spdk_zmalloc(0x1000, 0x1000, NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
 
-	rc = spdk_nvme_ns_cmd_write_with_md(ns_entry->ns, ns_entry->qpair,
-					    sequence->buf, NULL, 0, 1,
-					    read_complete, &sequence,
-					    ns_entry->io_flags, 0xffff, 0);
+	printf("Send read request\n");
+
+	rc = spdk_nvme_ns_cmd_read_with_md(ns_entry->ns, ns_entry->qpair,
+					   sequence->buf, NULL, 0, 1,
+					   read_complete, &sequence,
+					   ns_entry->io_flags, 0xffff, 0);
 	if (rc != 0) {
 		fprintf(stderr, "starting read I/O failed\n");
 		exit(1);
@@ -272,6 +279,8 @@ demo(void)
 			exit(1);
 		}
 
+		printf("Generate dif\n");
+
 		iov.iov_base = sequence.buf;
 		iov.iov_len  = ns_entry->block_size - ns_entry->md_size;
 		rc = spdk_dif_generate(&iov, 1, 1, &sequence.dif_ctx);
@@ -279,6 +288,8 @@ demo(void)
 			fprintf(stderr, "Generation of DIF failed\n");
 			exit(1);
 		}
+
+		printf("Send write request\n");
 
 		rc = spdk_nvme_ns_cmd_write_with_md(ns_entry->ns, ns_entry->qpair,
 						    sequence.buf, NULL, 0, 1,
