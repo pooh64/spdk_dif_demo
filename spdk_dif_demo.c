@@ -4,6 +4,12 @@
 #include "spdk/env.h"
 #include "spdk/dif.h"
 
+#define ERR_INJECT_OFFSET 64
+
+/* Enable to test end-to-end protection */
+// #define ERR_INJECT_GENERATE
+// #define ERR_INJECT_VERIFY
+
 struct ctrlr_entry {
 	struct ctrlr_entry	*next;
 	struct spdk_nvme_ctrlr  *ctrlr;
@@ -163,8 +169,13 @@ read_complete(void *arg, const struct spdk_nvme_cpl *completion)
 
 	printf("Read request done, verify DIF\n");
 
+#ifdef ERR_INJECT_VERIFY
+		sequence->buf[ERR_INJECT_OFFSET] = ~sequence->buf[ERR_INJECT_OFFSET];
+		printf("Inject error in I/O buffer\n");
+#endif
+
 	iov.iov_base = sequence->buf;
-	iov.iov_len  = sequence->ns_entry->block_size - sequence->ns_entry->md_size;
+	iov.iov_len  = sequence->ns_entry->block_size;
 	rc = spdk_dif_verify(&iov, 1, 1, &sequence->dif_ctx, &dif_error);
 	if (rc != 0) {
 		fprintf(stderr, "I/O DIF verify failed\n");
@@ -284,12 +295,16 @@ demo(void)
 		printf("Generate dif\n");
 
 		iov.iov_base = sequence.buf;
-		iov.iov_len  = ns_entry->block_size - ns_entry->md_size;
+		iov.iov_len  = ns_entry->block_size;
 		rc = spdk_dif_generate(&iov, 1, 1, &sequence.dif_ctx);
 		if (rc != 0) {
 			fprintf(stderr, "Generation of DIF failed\n");
 			exit(1);
 		}
+#ifdef ERR_INJECT_GENERATE
+		sequence.buf[ERR_INJECT_OFFSET] = ~sequence.buf[ERR_INJECT_OFFSET];
+		printf("Inject error in I/O buffer\n");
+#endif
 
 		printf("Send write request\n");
 
