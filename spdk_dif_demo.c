@@ -167,7 +167,9 @@ read_complete(void *arg, const struct spdk_nvme_cpl *completion)
 		goto err_handler;
 	}
 
-	printf("Read request done, verify DIF\n");
+	printf("Read request done\n");
+
+	printf("Verify DIF\n");
 
 #ifdef ERR_INJECT_VERIFY
 		sequence->buf[ERR_INJECT_OFFSET] = ~sequence->buf[ERR_INJECT_OFFSET];
@@ -227,7 +229,6 @@ write_complete(void *arg, const struct spdk_nvme_cpl *completion)
 	}
 }
 
-
 static void
 memrand(char *buf, size_t size)
 {
@@ -235,7 +236,6 @@ memrand(char *buf, size_t size)
 	for (; size; buf++, size--)
 		*buf = (char) rand();
 }
-
 
 static void
 demo(void)
@@ -280,6 +280,8 @@ demo(void)
 		sequence.ns_entry = ns_entry;
 
 
+		printf("Generate random I/O buffer\n");
+
 		memrand(sequence.buf, ns_entry->block_size);
 
 		rc = spdk_dif_ctx_init(&sequence.dif_ctx, ns_entry->block_size,
@@ -292,7 +294,7 @@ demo(void)
 			exit(1);
 		}
 
-		printf("Generate dif\n");
+		printf("Generate DIF\n");
 
 		iov.iov_base = sequence.buf;
 		iov.iov_len  = ns_entry->block_size;
@@ -325,8 +327,6 @@ demo(void)
 		ns_entry = ns_entry->next;
 	}
 }
-
-
 
 int main(int argc, char **argv)
 {
