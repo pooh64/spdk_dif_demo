@@ -158,6 +158,7 @@ read_complete(void *arg, const struct spdk_nvme_cpl *completion)
 		fprintf(stderr, "I/O error status: %s\n", spdk_nvme_cpl_get_status_string(&completion->status));
 		fprintf(stderr, "Read I/O failed, aborting run\n");
 		sequence->is_completed = 2;
+		goto err_handler;
 	}
 
 	printf("Read request done, verify DIF\n");
@@ -175,6 +176,7 @@ read_complete(void *arg, const struct spdk_nvme_cpl *completion)
 		printf("I/O Done, no DIF errors detected\n");
 	}
 
+err_handler:
 	spdk_free(sequence->buf);
 }
 
@@ -206,7 +208,7 @@ write_complete(void *arg, const struct spdk_nvme_cpl *completion)
 
 	rc = spdk_nvme_ns_cmd_read_with_md(ns_entry->ns, ns_entry->qpair,
 					   sequence->buf, NULL, 0, 1,
-					   read_complete, &sequence,
+					   read_complete, (void*) sequence,
 					   ns_entry->io_flags, 0xffff, 0);
 	if (rc != 0) {
 		fprintf(stderr, "starting read I/O failed\n");
