@@ -72,15 +72,15 @@ register_ns(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_ns *ns)
 	printf("  Namespace ID: %d size: %juGB\n", spdk_nvme_ns_get_id(ns),
 	       spdk_nvme_ns_get_size(ns) / 1000000000);
 
-
 	entry->block_size	= spdk_nvme_ns_get_extended_sector_size(ns);
 	entry->md_size		= spdk_nvme_ns_get_md_size(ns);
 	entry->md_interleave	= spdk_nvme_ns_supports_extended_lba(ns);
 	entry->pi_loc		= spdk_nvme_ns_get_data(ns)->dps.md_start;
 	entry->pi_type		= spdk_nvme_ns_get_pi_type(ns);
 
-	entry->io_flags		= 0;
+	entry->io_flags		= 0; /* dif_flags */
 	if (spdk_nvme_ns_get_flags(ns) & SPDK_NVME_NS_DPS_PI_SUPPORTED) {
+		/* PRACT=0, GUARD=1, REFTAG=0, APPTAG=0 */
 		entry->io_flags = SPDK_NVME_IO_FLAGS_PRCHK_GUARD;
 	}
 }
@@ -98,7 +98,7 @@ attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	if (entry == NULL) {
 		perror("ctrlr_entry malloc");
 		exit(EXIT_FAILURE);
-	}
+}
 
 	printf("Attached to %s\n", trid->traddr);
 	snprintf(entry->name, sizeof(entry->name), "%-20.20s (%-20.20s)", cdata->mn, cdata->sn);
@@ -135,7 +135,6 @@ cleanup(void)
 		free(ns_entry);
 		ns_entry = next;
 	}
-
 	g_ns_list = NULL;
 
 	while (ctrlr_entry) {
@@ -145,7 +144,6 @@ cleanup(void)
 		free(ctrlr_entry);
 		ctrlr_entry = next;
 	}
-
 	g_ctrlr_list = NULL;
 }
 
@@ -166,16 +164,14 @@ read_complete(void *arg, const struct spdk_nvme_cpl *completion)
 		sequence->is_completed = 2;
 		goto err_handler;
 	}
-
 	printf("Read request done\n");
 
-	printf("Verify DIF\n");
-
 #ifdef ERR_INJECT_VERIFY
-		sequence->buf[ERR_INJECT_OFFSET] = ~sequence->buf[ERR_INJECT_OFFSET];
 		printf("Inject error in I/O buffer\n");
+		sequence->buf[ERR_INJECT_OFFSET] = ~sequence->buf[ERR_INJECT_OFFSET];
 #endif
 
+	printf("Verify DIF\n");
 	iov.iov_base = sequence->buf;
 	iov.iov_len  = sequence->ns_entry->block_size;
 	rc = spdk_dif_verify(&iov, 1, 1, &sequence->dif_ctx, &dif_error);
@@ -205,9 +201,8 @@ write_complete(void *arg, const struct spdk_nvme_cpl *completion)
 		fprintf(stderr, "I/O error status: %s\n", spdk_nvme_cpl_get_status_string(&completion->status));
 		fprintf(stderr, "Write I/O failed, aborting run\n");
 		sequence->is_completed = 2;
-		exit(1);
+		exit(EXIT_FAILURE);
 	}
-
 	printf("Write reqest done\n");
 
 	if (sequence->using_cmb_io) {
@@ -218,14 +213,13 @@ write_complete(void *arg, const struct spdk_nvme_cpl *completion)
 	sequence->buf = spdk_zmalloc(0x1000, 0x1000, NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
 
 	printf("Send read request\n");
-
 	rc = spdk_nvme_ns_cmd_read_with_md(ns_entry->ns, ns_entry->qpair,
 					   sequence->buf, NULL, 0, 1,
 					   read_complete, (void*) sequence,
 					   ns_entry->io_flags, 0xffff, 0);
 	if (rc != 0) {
 		fprintf(stderr, "starting read I/O failed\n");
-		exit(1);
+		exit(EXIT_FAILURE);
 	}
 }
 
@@ -247,10 +241,12 @@ demo(void)
 
 	ns_entry = g_ns_list;
 	while (ns_entry != NULL) {
-		if (!(ns_entry->io_flags | SPDK_NVME_IO_FLAGS_PRCHK_GUARD) ||
-		    !ns_entry->md_interleave				   ||
-		    ns_entry->md_size == 0) {
-			printf("INFO: Skip no-guard NS\n");
+		/* Require GUARD generated in software */
+		if (  ns_entry->md_size		== 0				||
+		      ns_entry->md_interleave 	== false			||
+		     (ns_entry->io_flags	|  SPDK_NVME_IO_FLAGS_PRACT)	||
+		    !(ns_entry->io_flags 	|  SPDK_NVME_IO_FLAGS_PRCHK_GUARD)) {
+			printf("INFO: Skip no-DIF-GUARD NS\n");
 			ns_entry = ns_entry->next;
 			continue;
 		}
@@ -261,6 +257,7 @@ demo(void)
 			return;
 		}
 
+		/* Alloc 4KB I/O buffer */
 		sequence.using_cmb_io = 1;
 		sequence.buf = spdk_nvme_ctrlr_alloc_cmb_io_buffer(ns_entry->ctrlr, 0x1000);
 		if (sequence.buf == NULL) {
@@ -279,11 +276,10 @@ demo(void)
 		sequence.is_completed = 0;
 		sequence.ns_entry = ns_entry;
 
-
 		printf("Generate random I/O buffer\n");
-
 		memrand(sequence.buf, ns_entry->block_size);
 
+		printf("Generate DIF\n");
 		rc = spdk_dif_ctx_init(&sequence.dif_ctx, ns_entry->block_size,
 				       ns_entry->md_size, ns_entry->md_interleave,
 				       ns_entry->pi_loc,
@@ -291,32 +287,29 @@ demo(void)
 				       ns_entry->io_flags, 0, 0xffff, 0, 0, 0);
 		if (rc != 0) {
 			fprintf(stderr, "Initialization of DIF context failed\n");
-			exit(1);
+			exit(EXIT_FAILURE);
 		}
-
-		printf("Generate DIF\n");
-
 		iov.iov_base = sequence.buf;
 		iov.iov_len  = ns_entry->block_size;
 		rc = spdk_dif_generate(&iov, 1, 1, &sequence.dif_ctx);
 		if (rc != 0) {
 			fprintf(stderr, "Generation of DIF failed\n");
-			exit(1);
+			exit(EXIT_FAILURE);
 		}
+
 #ifdef ERR_INJECT_GENERATE
-		sequence.buf[ERR_INJECT_OFFSET] = ~sequence.buf[ERR_INJECT_OFFSET];
 		printf("Inject error in I/O buffer\n");
+		sequence.buf[ERR_INJECT_OFFSET] = ~sequence.buf[ERR_INJECT_OFFSET];
 #endif
 
 		printf("Send write request\n");
-
 		rc = spdk_nvme_ns_cmd_write_with_md(ns_entry->ns, ns_entry->qpair,
 						    sequence.buf, NULL, 0, 1,
 						    write_complete, &sequence,
 						    ns_entry->io_flags, 0xffff, 0);
 		if (rc != 0) {
 			fprintf(stderr, "starting write I/O failed\n");
-			exit(1);
+			exit(EXIT_FAILURE);
 		}
 
 		while (!sequence.is_completed) {
@@ -333,7 +326,6 @@ int main(int argc, char **argv)
 	int rc;
 	struct spdk_env_opts opts;
 
-	/* Init env */
 	spdk_env_opts_init(&opts);
 	opts.name = "spdk_dif_demo";
 	opts.shm_id = 0;
@@ -342,9 +334,7 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	/* Init g_ctrlr_list, g_ns_list */
 	printf("Initializing NVMe Controllers\n");
-
 	rc = spdk_nvme_probe(NULL, NULL, probe_cb, attach_cb, NULL);
 	if (rc != 0) {
 		fprintf(stderr, "spdk_nvme_probe() failed\n");
@@ -357,7 +347,6 @@ int main(int argc, char **argv)
 		cleanup();
 		return EXIT_FAILURE;
 	}
-
 	printf("Initialization complete.\n");
 
 	demo();
